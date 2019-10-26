@@ -2,22 +2,19 @@ package com.fasterxml.jackson.module.kotlin
 
 import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.annotation.JsonValue
 import com.fasterxml.jackson.databind.MapperFeature
-import com.fasterxml.jackson.databind.introspect.Annotated
-import com.fasterxml.jackson.databind.introspect.AnnotatedConstructor
-import com.fasterxml.jackson.databind.introspect.AnnotatedMember
-import com.fasterxml.jackson.databind.introspect.AnnotatedParameter
-import com.fasterxml.jackson.databind.introspect.NopAnnotationIntrospector
+import com.fasterxml.jackson.databind.cfg.MapperConfig
+import com.fasterxml.jackson.databind.introspect.*
 import com.fasterxml.jackson.databind.module.SimpleModule
 import com.fasterxml.jackson.databind.util.LRUMap
 import java.lang.reflect.Constructor
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
-import kotlin.reflect.KClass
-import kotlin.reflect.KFunction
-import kotlin.reflect.KParameter
+import kotlin.reflect.*
 import kotlin.reflect.full.*
 import kotlin.reflect.jvm.internal.KotlinReflectionInternalError
+import kotlin.reflect.jvm.javaField
 import kotlin.reflect.jvm.javaType
 import kotlin.reflect.jvm.kotlinFunction
 
@@ -87,12 +84,14 @@ internal class ReflectionCache(reflectionCacheSize: Int) {
     private val javaMethodToKotlin = LRUMap<Method, KFunction<*>>(reflectionCacheSize, reflectionCacheSize)
     private val javaConstructorIsCreatorAnnotated = LRUMap<AnnotatedConstructor, Boolean>(reflectionCacheSize, reflectionCacheSize)
     private val javaMemberIsRequired = LRUMap<AnnotatedMember, BooleanTriState?>(reflectionCacheSize, reflectionCacheSize)
+    private val classIsInline = LRUMap<Class<*>, Boolean>(reflectionCacheSize, reflectionCacheSize)
 
     fun kotlinFromJava(key: Class<Any>): KClass<Any> = javaClassToKotlin.get(key) ?: key.kotlin.let { javaClassToKotlin.putIfAbsent(key, it) ?: it }
     fun kotlinFromJava(key: Constructor<Any>): KFunction<Any>? = javaConstructorToKotlin.get(key) ?: key.kotlinFunction?.let { javaConstructorToKotlin.putIfAbsent(key, it) ?: it }
     fun kotlinFromJava(key: Method): KFunction<*>? = javaMethodToKotlin.get(key) ?: key.kotlinFunction?.let { javaMethodToKotlin.putIfAbsent(key, it) ?: it }
     fun checkConstructorIsCreatorAnnotated(key: AnnotatedConstructor, calc: (AnnotatedConstructor) -> Boolean): Boolean = javaConstructorIsCreatorAnnotated.get(key) ?: calc(key).let { javaConstructorIsCreatorAnnotated.putIfAbsent(key, it) ?: it }
     fun javaMemberIsRequired(key: AnnotatedMember, calc: (AnnotatedMember) -> Boolean?): Boolean? = javaMemberIsRequired.get(key)?.value ?: calc(key).let { javaMemberIsRequired.putIfAbsent(key, BooleanTriState.fromBoolean(it))?.value ?: it }
+    fun classIsInline(key: Class<*>): Boolean = classIsInline.get(key) ?: key.isInlineClass().let { classIsInline.putIfAbsent(key, it) ?: it }
 }
 
 internal class KotlinNamesAnnotationIntrospector(val module: KotlinModule, val cache: ReflectionCache) : NopAnnotationIntrospector() {
@@ -112,13 +111,13 @@ internal class KotlinNamesAnnotationIntrospector(val module: KotlinModule, val c
     }
 
     @Suppress("UNCHECKED_CAST")
-    override fun hasCreatorAnnotation(member: Annotated): Boolean {
+    override fun findCreatorAnnotation(config: MapperConfig<*>?, member: Annotated?): JsonCreator.Mode? {
         // don't add a JsonCreator to any constructor if one is declared already
 
         if (member is AnnotatedConstructor && !member.declaringClass.isEnum) {
             // if has parameters, is a Kotlin class, and the parameters all have parameter annotations, then pretend we have a JsonCreator
             if (member.getParameterCount() > 0 && member.getDeclaringClass().isKotlinClass()) {
-                return cache.checkConstructorIsCreatorAnnotated(member) {
+                return if (cache.checkConstructorIsCreatorAnnotated(member) {
                     val kClass = cache.kotlinFromJava(member.getDeclaringClass() as Class<Any>)
                     val kConstructor = cache.kotlinFromJava(member.getAnnotated() as Constructor<Any>)
 
@@ -165,13 +164,44 @@ internal class KotlinNamesAnnotationIntrospector(val module: KotlinModule, val c
 
                         implyCreatorAnnotation
                     } else {
-                        false
+                        // Might be synthetic constructor because of inline class parameters
+                        member.declaringClass.hasInlineClassParameters()
                     }
-                }
+                }) JsonCreator.Mode.DEFAULT else null
             }
         }
-        return false
+
+        // Support for inline classes
+        if (member is AnnotatedMethod && member.name == "box-impl") {
+//            val staticCreator = member.declaringClass.declaredMethods
+//                .any { m -> Modifier.isStatic(m.modifiers) &&  m.isAnnotationPresent(JsonCreator::class.java) }
+//            val constructorCreator = member.declaringClass.constructors
+//                .any { m -> m.isAnnotationPresent(JsonCreator::class.java) }
+//            return if (!staticCreator && !constructorCreator) JsonCreator.Mode.DEFAULT else null
+            return JsonCreator.Mode.DEFAULT
+        }
+
+        return null
     }
+
+    override fun hasAsValue(member: Annotated): Boolean? {
+        // Support for inline classes
+        if (member is AnnotatedMethod && cache.classIsInline(member.declaringClass)) {
+            // Inline classes have exactly one non-static field
+            val field = member.declaringClass.declaredFields.single { !Modifier.isStatic(it.modifiers) }
+            val getterName = "get" + field.name.capitalize()
+            // Annotate the corresponding property with @JsonValue
+            if (member.name == getterName) {
+                // Check if anything is annotated as @JsonValue
+                return !member.declaringClass.kotlin.members
+                    .any { m -> m.hasAnnotation<JsonValue>() }
+            }
+        }
+        return null
+    }
+
+    private inline fun <reified T> KCallable<*>.hasAnnotation() =
+        annotations.any { it is T } || (this as? KProperty<*>)?.javaField?.isAnnotationPresent(JsonValue::class.java) ?: false
 
     @Suppress("UNCHECKED_CAST")
     protected fun findKotlinParameterName(param: AnnotatedParameter): String? {
@@ -183,6 +213,9 @@ internal class KotlinNamesAnnotationIntrospector(val module: KotlinModule, val c
                 val ktorParmCount = try { ctor.kotlinFunction?.parameters?.size ?: 0 } catch (ex: KotlinReflectionInternalError) { 0 }
                 if (ktorParmCount > 0 && ktorParmCount == ctorParmCount) {
                     ctor.kotlinFunction?.parameters?.get(param.index)?.name
+                } else if (ctor.kotlinFunction == null  && member.declaringClass.hasInlineClassParameters()) {
+                    // Might be synthetic constructor because of inline class parameters
+                    member.declaringClass.kotlin.primaryConstructor?.parameters?.get(param.index)?.name
                 } else {
                     null
                 }
@@ -208,5 +241,4 @@ internal class KotlinNamesAnnotationIntrospector(val module: KotlinModule, val c
         }
         return null
     }
-
 }
