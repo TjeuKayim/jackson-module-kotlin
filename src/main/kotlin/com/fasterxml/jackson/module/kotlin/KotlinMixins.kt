@@ -3,6 +3,7 @@ package com.fasterxml.jackson.module.kotlin
 import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.annotation.JsonValue
 
 internal abstract class ClosedRangeMixin<T> @JsonCreator constructor(public val start: T, @get:JsonProperty("end") public val endInclusive: T)  {
     @JsonIgnore abstract public fun getEnd(): T
@@ -11,4 +12,10 @@ internal abstract class ClosedRangeMixin<T> @JsonCreator constructor(public val 
     @JsonIgnore abstract public fun getIncrement(): T
     @JsonIgnore abstract public fun isEmpty(): Boolean
     @JsonIgnore abstract public fun getStep(): T
+}
+
+@ExperimentalUnsignedTypes
+internal abstract class UNumberMixin<T> {
+    @JsonValue
+    abstract override fun toString(): String
 }

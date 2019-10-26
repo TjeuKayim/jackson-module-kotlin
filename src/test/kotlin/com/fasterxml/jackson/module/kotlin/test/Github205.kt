@@ -22,6 +22,7 @@ import kotlin.test.assertTrue
  *
  * @author Tjeu Kayim
  */
+@ExperimentalUnsignedTypes
 class TestGithub205 {
     val mapper = jacksonObjectMapper()
 
@@ -178,6 +179,52 @@ class TestGithub205 {
         assertEquals("12", json)
         val result = mapper.readValue<OverrideCreatorBoxed>(json)
         assertEquals(OverrideCreatorBoxed.parse(obj.foo), result)
+    }
+
+    @Test
+    fun unsignedNumbers() {
+        testUnsignedNumber(UByte.MAX_VALUE)
+        testUnsignedNumber(UShort.MAX_VALUE)
+        testUnsignedNumber(UInt.MAX_VALUE)
+        testUnsignedNumber(ULong.MAX_VALUE)
+    }
+
+    private inline fun <reified T>testUnsignedNumber(obj: T) {
+        val expected = obj.toString()
+        val json = mapper.writeValueAsString(obj)
+        assertEquals("\"${expected}\"", json)
+        val result = mapper.readValue<T>(json)
+        assertEquals(obj, result)
+    }
+
+    @Test
+    fun unsignedProperty() {
+        data class Foo(val signed: Byte, val unsigned: UByte)
+        val obj = Foo(25, 250U)
+        val json = mapper.writeValueAsString(obj)
+        assertEquals("""{"signed":25,"unsigned":250}""", json)
+        val result = mapper.readValue<Foo>(json)
+        assertEquals(obj, result)
+    }
+
+    @Test
+    fun unsignedNullable() {
+        data class Foo(val signed: Byte?, val unsigned: UByte?)
+        val obj = Foo(25, 250U)
+        val json = mapper.writeValueAsString(obj)
+        assertEquals("""{"signed":25,"unsigned":250}""", json)
+        val result = mapper.readValue<Foo>(json)
+        assertEquals(obj, result)
+    }
+
+    @Test
+    fun unsignedNull() {
+        data class Foo(val signed: Int?, val unsigned: UInt?)
+        val obj = Foo(null, null)
+        val json = mapper.writeValueAsString(obj)
+        assertEquals("""{"signed":null,"unsigned":null}""", json)
+        val result = mapper.readValue<Foo>(json)
+        assertEquals(obj, result)
     }
 }
 

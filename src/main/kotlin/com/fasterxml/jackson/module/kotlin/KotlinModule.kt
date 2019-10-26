@@ -29,6 +29,7 @@ class KotlinModule(val reflectionCacheSize: Int = 512, val nullToEmptyCollection
         const val serialVersionUID = 1L
     }
 
+    @ExperimentalUnsignedTypes
     override fun setupModule(context: SetupContext) {
         super.setupModule(context)
 
@@ -43,18 +44,24 @@ class KotlinModule(val reflectionCacheSize: Int = 512, val nullToEmptyCollection
         // [module-kotlin#225]: keep Kotlin singletons as singletons
         context.addBeanDeserializerModifier(KotlinBeanDeserializerModifier)
 
-        fun addMixIn(clazz: Class<*>, mixin: Class<*>) {
-            context.setMixInAnnotations(clazz, mixin)
+        fun addMixIn(clazz: KClass<*>, mixin: KClass<*>) {
+            context.setMixInAnnotations(clazz.java, mixin.java)
         }
 
         context.insertAnnotationIntrospector(KotlinAnnotationIntrospector(context, cache, nullToEmptyCollection, nullToEmptyMap))
         context.appendAnnotationIntrospector(KotlinNamesAnnotationIntrospector(this, cache))
 
         // ranges
-        addMixIn(IntRange::class.java, ClosedRangeMixin::class.java)
-        addMixIn(CharRange::class.java, ClosedRangeMixin::class.java)
-        addMixIn(LongRange::class.java, ClosedRangeMixin::class.java)
-        addMixIn(ClosedRange::class.java, ClosedRangeMixin::class.java)
+        addMixIn(IntRange::class, ClosedRangeMixin::class)
+        addMixIn(CharRange::class, ClosedRangeMixin::class)
+        addMixIn(LongRange::class, ClosedRangeMixin::class)
+        addMixIn(ClosedRange::class, ClosedRangeMixin::class)
+
+        // unsigned numbers
+        addMixIn(UByte::class, UNumberMixin::class)
+        addMixIn(UShort::class, UNumberMixin::class)
+        addMixIn(UInt::class, UNumberMixin::class)
+        addMixIn(ULong::class, UNumberMixin::class)
     }
 }
 
